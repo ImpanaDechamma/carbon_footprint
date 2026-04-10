@@ -1,9 +1,7 @@
 {
-    "MAE_energy_kwh": 1e-08,
-    "RMSE_energy_kwh": 2.6e-07,
-    "R2_energy_kwh": 0.99999998,
-    "MAE_carbon_emission": 0.0,
-    "RMSE_carbon_emission": 6e-08,
-    "R2_carbon_emission": 1.0,
-    "model_used": "ExtraTreesRegressor"
+    "MAE_carbon_emission": 4e-08,
+    "MSE_carbon_emission": 0.0,
+    "RMSE_carbon_emission": 9.5e-07,
+    "R2_carbon_emission": 0.99999986,
+    "model_used": "RandomForestRegressor"
 }

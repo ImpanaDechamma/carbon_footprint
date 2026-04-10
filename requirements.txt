@@ -1,6 +1,10 @@
+pandas
+numpy
+scikit-learn
+joblib
 flask
 flask-cors
-pandas
-scikit-learn
-numpy
-gunicorn
+streamlit
+requests
+pymongo
+plotly

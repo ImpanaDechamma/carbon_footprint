@@ -3,3 +3,4 @@ __pycache__/
 *.pkl
 *.csv
 .env
+email_alert.py
