@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-from sklearn.linear_model import LinearRegression
 
 # ---------------- COUNTRY EMISSION FACTORS ----------------
 COUNTRY_EMISSION_FACTORS = {
@@ -175,7 +174,13 @@ def load_data():
     return df
 
 df = load_data()
-EMISSION_FACTOR = 0.82
+
+# emission factor per server based on the dataset
+SERVER_EMISSION_FACTORS = {
+    "S1": 0.386,   # USA
+    "S2": 0.233,   # EU
+    "S3": 0.820,   # India
+}
 
 # ---------------- HERO ----------------
 st.markdown("""
@@ -231,6 +236,18 @@ compare_chart = st.sidebar.selectbox(
     ["Bar Chart", "Pie Chart"]
 )
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🚨 Alert Threshold")
+alert_threshold = st.sidebar.number_input(
+    "Carbon Alert Threshold (kg CO₂)",
+    min_value=0.0001,
+    value=0.010,
+    step=0.001,
+    format="%.4f",
+    help="An alert is triggered when the latest carbon reading exceeds this value."
+)
+st.sidebar.caption(f"Alert fires if carbon > **{alert_threshold} kg CO₂**")
+
 # ---------------- USER INPUT ----------------
 st.sidebar.markdown("---")
 st.sidebar.subheader("➕ Enter Data")
@@ -242,19 +259,21 @@ time_input = st.sidebar.time_input("Time")
 if st.sidebar.button("Add Data", use_container_width=True):
     if energy_input > 0:
         timestamp = pd.to_datetime(f"{date_input} {time_input}")
+        emission_factor = SERVER_EMISSION_FACTORS.get(server, 0.82)
+        carbon_value    = round(energy_input * emission_factor, 6)
 
         new_data = pd.DataFrame({
-            "server_id": [server],
-            "timestamp": [timestamp],
+            "server_id" : [server],
+            "timestamp" : [timestamp],
             "energy_kwh": [energy_input],
-            "carbon": [energy_input * EMISSION_FACTOR]
+            "carbon"    : [carbon_value]
         })
 
         st.session_state.history = pd.concat(
             [st.session_state.history, new_data],
             ignore_index=True
         )
-        st.sidebar.success("Data added successfully")
+        st.sidebar.success(f"Added: {carbon_value} kg CO₂ ({server})")
     else:
         st.sidebar.warning("Enter energy greater than 0")
 
@@ -263,10 +282,16 @@ combined_df = pd.concat([df, st.session_state.history], ignore_index=True)
 
 if "carbon_emission" in combined_df.columns:
     combined_df["carbon"] = combined_df["carbon_emission"].fillna(
-        combined_df["energy_kwh"] * EMISSION_FACTOR
+        combined_df.apply(
+            lambda r: r["energy_kwh"] * SERVER_EMISSION_FACTORS.get(r["server_id"], 0.82),
+            axis=1
+        )
     )
 else:
-    combined_df["carbon"] = combined_df["energy_kwh"] * EMISSION_FACTOR
+    combined_df["carbon"] = combined_df.apply(
+        lambda r: r["energy_kwh"] * SERVER_EMISSION_FACTORS.get(r["server_id"], 0.82),
+        axis=1
+    )
 
 combined_df["timestamp"] = pd.to_datetime(combined_df["timestamp"])
 combined_df = combined_df.sort_values("timestamp")
@@ -365,38 +390,67 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------- PREDICTION ----------------
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("🔮 Prediction Table")
+st.subheader("🔮 Predicted Carbon Emission (Random Forest)")
+st.caption("Uses the trained Random Forest model to predict carbon emission based on current server, region and energy input.")
 
-if filtered_df.empty or len(filtered_df) < 2:
-    st.warning("Not enough data for prediction")
+if not filtered_df.empty:
+    pred_c1, pred_c2, pred_c3 = st.columns(3)
+
+    with pred_c1:
+        pred_energy = st.number_input(
+            "🔋 Energy (kWh)",
+            min_value=0.0001, value=0.01, step=0.001, format="%.4f",
+            key="pred_energy"
+        )
+    with pred_c2:
+        pred_power = st.number_input(
+            "⚡ Power (Watts)",
+            min_value=1.0, value=120.0, step=1.0,
+            key="pred_power"
+        )
+    with pred_c3:
+        pred_region = st.selectbox(
+            "🌍 Region",
+            ["USA", "EU", "India"],
+            key="pred_region"
+        )
+
+    if st.button("🔮 Predict Carbon", use_container_width=True):
+        try:
+            import requests
+            payload = {
+                "server_id"      : server,
+                "region"         : pred_region,
+                "energy_kwh"     : pred_energy,
+                "power_watts"    : pred_power,
+                "emission_factor": {"USA": 0.386, "EU": 0.233, "India": 0.82}.get(pred_region, 0.386),
+                "timestamp"      : pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            response = requests.post("http://127.0.0.1:5000/predict", json=payload, timeout=5)
+            result   = response.json()
+
+            if result.get("success"):
+                predicted_val = result["predicted_carbon_emission"]
+                actual_val    = round(pred_energy * payload["emission_factor"], 6)
+                diff          = round(predicted_val - actual_val, 6)
+                diff_pct      = round((diff / actual_val) * 100, 2) if actual_val != 0 else 0
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("🤖 Predicted Carbon",  f"{predicted_val} kg CO₂")
+                m2.metric("🧮 Calculated Carbon", f"{actual_val} kg CO₂")
+                m3.metric("📊 Difference",        f"{diff} kg CO₂", delta=f"{diff_pct}%")
+
+                st.caption("🤖 **Predicted** = Random Forest model output based on power, time and server patterns")
+                st.caption("🧮 **Calculated** = Direct formula: energy × emission factor")
+            else:
+                st.error(f"Prediction failed: {result.get('error')}")
+
+        except requests.exceptions.ConnectionError:
+            st.warning("⚠️ Flask API is not running. Start it with `python main.py` to use predictions.")
+        except Exception as e:
+            st.error(f"Error: {e}")
 else:
-    prediction_df = filtered_df.sort_values("timestamp").copy()
-    prediction_df["time_index"] = np.arange(len(prediction_df))
-
-    X = prediction_df[["time_index"]]
-    y = prediction_df["carbon"]
-
-    model = LinearRegression()
-    model.fit(X, y)
-
-    future_index = pd.DataFrame({
-        "time_index": np.arange(len(prediction_df), len(prediction_df) + 5)
-    })
-
-    preds = model.predict(future_index)
-
-    future_dates = pd.date_range(
-        start=prediction_df["timestamp"].max(),
-        periods=6,
-        freq="D"
-    )[1:]
-
-    future_df = pd.DataFrame({
-        "timestamp": future_dates,
-        "predicted_carbon": preds
-    })
-
-    st.dataframe(future_df, use_container_width=True)
+    st.warning("No data available for prediction.")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -446,29 +500,58 @@ st.markdown('</div>', unsafe_allow_html=True)
 # ---------------- ALERTS ----------------
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("⚠️ Smart Alerts")
+st.caption(f"Current threshold: **{alert_threshold} kg CO₂** — change it in the sidebar.")
 
 if not recent.empty and len(recent) >= 3:
     recent_alert = recent.sort_values("timestamp").copy()
-    last = recent_alert["carbon"].iloc[-1]
-    avg  = recent_alert["carbon"].mean()
-    alert_email = st.session_state.get("alert_email", "")
-    alert_type  = None
+    last         = recent_alert["carbon"].iloc[-1]
+    avg          = recent_alert["carbon"].mean()
+    alert_email  = st.session_state.get("alert_email", "")
+    alert_type   = None
 
-    if last > avg * 1.3:
-        st.error("🚨 Sudden spike in carbon emission detected!")
+    # ── threshold breach (user-defined) ──────────────────────────────────────
+    if last > alert_threshold:
+        st.error(
+            f"🚨 Carbon emission **{round(last, 6)} kg CO₂** exceeded your "
+            f"threshold of **{alert_threshold} kg CO₂**!"
+        )
+        alert_type = "threshold"
+
+    # ── spike: 30% above rolling average ─────────────────────────────────────
+    elif last > avg * 1.3:
+        st.error(
+            f"🚨 Sudden spike detected! Current: **{round(last,6)} kg CO₂** "
+            f"is 30%+ above average **{round(avg,6)} kg CO₂**."
+        )
         alert_type = "spike"
+
+    # ── rising trend: 3 consecutive increases ────────────────────────────────
     elif (
         recent_alert["carbon"].iloc[-1] >
         recent_alert["carbon"].iloc[-2] >
         recent_alert["carbon"].iloc[-3]
     ):
-        st.warning("⚠️ Carbon emission is continuously increasing!")
+        st.warning(
+            f"⚠️ Carbon emission is continuously increasing over the last 3 readings "
+            f"(latest: **{round(last,6)} kg CO₂**)."
+        )
         alert_type = "trend"
-    elif last < avg * 0.7:
-        st.success("✅ Emission reduced significantly!")
-    else:
-        st.info("ℹ️ System is stable.")
 
+    # ── significant reduction ─────────────────────────────────────────────────
+    elif last < avg * 0.7:
+        st.success(
+            f"✅ Emission reduced significantly! Current: **{round(last,6)} kg CO₂** "
+            f"is 30%+ below average **{round(avg,6)} kg CO₂**."
+        )
+
+    # ── stable ────────────────────────────────────────────────────────────────
+    else:
+        st.info(
+            f"ℹ️ System is stable. Current emission: **{round(last,6)} kg CO₂** "
+            f"(threshold: {alert_threshold} kg CO₂)."
+        )
+
+    # ── send email if alert triggered ─────────────────────────────────────────
     if alert_type and alert_email:
         last_sent_key = f"last_alert_sent_{server}"
         last_sent     = st.session_state.get(last_sent_key)
@@ -488,7 +571,7 @@ if not recent.empty and len(recent) >= 3:
             except Exception as e:
                 st.error(f"Failed to send email: {e}")
 else:
-    st.info("Not enough data for alerts")
+    st.info("Add at least 3 data entries using the sidebar to activate alerts.")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
